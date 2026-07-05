@@ -1,7 +1,7 @@
 {
-  "name": "api-relay",
+  "name": "theme-relay",
   "version": "1.0.0",
-  "description": "Relay server for extension data",
+  "description": "Theme generation relay",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
