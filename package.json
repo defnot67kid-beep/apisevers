@@ -1,16 +1,15 @@
 {
-  "name": "kholin-api",
+  "name": "kholin-discord-bot",
   "version": "1.0.0",
-  "description": "Kholin API server for special ID generation and verification",
-  "main": "server.js",
+  "description": "Discord bot for Kholin verification system",
+  "main": "discord-bot.js",
   "scripts": {
-    "start": "node server.js",
-    "dev": "nodemon server.js"
+    "start": "node discord-bot.js",
+    "dev": "nodemon discord-bot.js"
   },
   "dependencies": {
-    "express": "^4.18.2",
-    "cors": "^2.8.5",
-    "dotenv": "^16.3.1"
+    "discord.js": "^14.14.1",
+    "node-fetch": "^2.7.0"
   },
   "devDependencies": {
     "nodemon": "^3.0.1"
