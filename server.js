@@ -3,6 +3,17 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const crypto = require('crypto');
 
+// Enable CORS for all routes
+app.use((req, res, next) => {
+    res.header('Access-Control-Allow-Origin', '*');
+    res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept');
+    res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+    if (req.method === 'OPTIONS') {
+        return res.sendStatus(200);
+    }
+    next();
+});
+
 app.use(express.json());
 
 // Store generated IDs (in production, use a database)
@@ -123,30 +134,48 @@ app.post('/api/users/register', async (req, res) => {
 // SPECIAL ID ENDPOINTS
 // ============================================
 
-// Get special ID for a user
+// Get special ID for a user - FIXED
 app.get('/api/special-id/:userId', (req, res) => {
     const { userId } = req.params;
     
     console.log(`[Special ID] Request for user: ${userId}`);
     console.log(`[Special ID] Stored IDs:`, Array.from(generatedIds.keys()));
     
-    if (generatedIds.has(userId)) {
-        const data = generatedIds.get(userId);
+    // Trim whitespace and handle case sensitivity
+    const trimmedUserId = userId.trim();
+    
+    // Check if we have this user
+    if (generatedIds.has(trimmedUserId)) {
+        const data = generatedIds.get(trimmedUserId);
         console.log(`[Special ID] Found:`, data);
         return res.json({
             success: true,
-            userId: userId,
+            userId: trimmedUserId,
             specialId: data.specialId,
             username: data.username,
             createdAt: data.createdAt
         });
-    } else {
-        console.log(`[Special ID] NOT found for user: ${userId}`);
-        return res.status(404).json({
-            success: false,
-            error: "No special ID found for this user"
-        });
     }
+    
+    // Try case-insensitive lookup
+    for (const [key, value] of generatedIds) {
+        if (key.toLowerCase() === trimmedUserId.toLowerCase()) {
+            console.log(`[Special ID] Found case-insensitive match: ${key}`);
+            return res.json({
+                success: true,
+                userId: key,
+                specialId: value.specialId,
+                username: value.username,
+                createdAt: value.createdAt
+            });
+        }
+    }
+    
+    console.log(`[Special ID] NOT found for user: ${trimmedUserId}`);
+    return res.status(404).json({
+        success: false,
+        error: "No special ID found for this user"
+    });
 });
 
 // Generate special ID for a user (manual trigger)
