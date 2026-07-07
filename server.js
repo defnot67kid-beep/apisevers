@@ -17,7 +17,7 @@ app.use((req, res, next) => {
 app.use(express.json());
 
 // Store generated IDs (in production, use a database)
-const generatedIds = new Map(); // userId -> { specialId, createdAt, username, verified, discordId, discordName }
+const generatedIds = new Map(); // userId -> { specialId, createdAt, username, verified }
 const verifiedUsers = new Map(); // discordId -> { userId, username, specialId, verifiedAt }
 
 // Generate a unique special ID for a user
@@ -234,7 +234,7 @@ app.post('/api/generate-special-id', (req, res) => {
     });
 });
 
-// Mark user as verified (called by the bot or extension)
+// Mark user as verified
 app.post('/api/verify-user', (req, res) => {
     const { userId, specialId, discordId, discordName } = req.body;
     
@@ -328,6 +328,25 @@ app.get('/api/verified-users', (req, res) => {
         success: true,
         total: data.length,
         data: data
+    });
+});
+
+app.delete('/api/special-id/:userId', (req, res) => {
+    const { userId } = req.params;
+    
+    if (generatedIds.has(userId)) {
+        const data = generatedIds.get(userId);
+        generatedIds.delete(userId);
+        console.log(`[Admin] Deleted user: ${userId} (${data.username})`);
+        return res.json({
+            success: true,
+            message: `Deleted user ${userId}`
+        });
+    }
+    
+    return res.status(404).json({
+        success: false,
+        error: "User not found"
     });
 });
 
