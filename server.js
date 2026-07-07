@@ -191,7 +191,7 @@ app.post('/api/store-verification-code', (req, res) => {
     });
 });
 
-// Verify a code entered by the user
+// Verify a code entered by the user in the extension
 app.post('/api/verify-code', (req, res) => {
     const { code, userId, specialId } = req.body;
     
@@ -204,21 +204,21 @@ app.post('/api/verify-code', (req, res) => {
         });
     }
     
-    const pending = pendingVerifications.get(code);
+    const pending = pendingVerifications.get(code.toUpperCase());
     
     if (!pending) {
         return res.status(404).json({
             success: false,
-            error: 'Invalid verification code'
+            error: 'Invalid verification code. Please check and try again.'
         });
     }
     
     // Check if expired
     if (new Date(pending.expiresAt) < new Date()) {
-        pendingVerifications.delete(code);
+        pendingVerifications.delete(code.toUpperCase());
         return res.json({
             success: false,
-            error: 'Verification code has expired'
+            error: 'Verification code has expired. Please generate a new one in Discord.'
         });
     }
     
@@ -226,51 +226,54 @@ app.post('/api/verify-code', (req, res) => {
     if (pending.userId !== userId) {
         return res.json({
             success: false,
-            error: 'This code was not generated for your account'
+            error: 'This code was not generated for your account.'
         });
     }
     
-    // Check if the special ID matches
-    if (generatedIds.has(userId)) {
-        const stored = generatedIds.get(userId);
-        if (stored.specialId !== specialId) {
-            return res.json({
-                success: false,
-                error: 'Invalid special ID'
-            });
-        }
-    } else {
+    // Check if the special ID exists for this user
+    if (!generatedIds.has(userId)) {
         return res.json({
             success: false,
-            error: 'User not found in system'
+            error: 'User not found. Please link your profile first.'
+        });
+    }
+    
+    const stored = generatedIds.get(userId);
+    
+    // Check if the special ID matches
+    if (stored.specialId !== specialId) {
+        return res.json({
+            success: false,
+            error: 'Invalid special ID. Please refresh and try again.'
         });
     }
     
     // Mark as verified
-    const data = generatedIds.get(userId);
-    data.verified = true;
-    data.verifiedAt = new Date().toISOString();
-    data.discordId = pending.discordId;
-    data.discordUsername = pending.discordName;
+    stored.verified = true;
+    stored.verifiedAt = new Date().toISOString();
+    stored.discordId = pending.discordId;
+    stored.discordUsername = pending.discordName;
     
     // Store in verified users
     verifiedUsers.set(pending.discordId, {
         userId: userId,
-        username: data.username,
+        username: stored.username,
+        displayName: stored.displayName,
         specialId: specialId,
         verifiedAt: new Date().toISOString(),
         discordUsername: pending.discordName
     });
     
     // Remove the pending verification
-    pendingVerifications.delete(code);
+    pendingVerifications.delete(code.toUpperCase());
     
-    console.log(`[Verify Code] ✅ User ${data.username} verified with code ${code}`);
+    console.log(`[Verify Code] ✅ User ${stored.username} verified with code ${code}`);
     
     return res.json({
         success: true,
         verified: true,
-        username: data.username,
+        username: stored.username,
+        displayName: stored.displayName,
         userId: userId,
         specialId: specialId,
         discordId: pending.discordId,
@@ -282,7 +285,7 @@ app.post('/api/verify-code', (req, res) => {
 app.get('/api/verification-status/:code', (req, res) => {
     const { code } = req.params;
     
-    const pending = pendingVerifications.get(code);
+    const pending = pendingVerifications.get(code.toUpperCase());
     
     if (!pending) {
         return res.json({
